@@ -1,0 +1,148 @@
+/***************************************************************************/
+/*************** Proyecto: SENSOR DE TEMPERATURA INTERNO *******************/
+/***************************************************************************/
+/*************** Microcontrolador: TM4C123GH6PM ****************************/
+/*************** Tiva C Series TM4C123GH6PM LaunchPad **********************/
+/*************** Autor: Pablo Díaz Vergara *********************************/
+/*************** Fecha: Mayo 2017 ******************************************/
+/*************** Enunciado: Se lee la temperatura con decimales*************/
+/****************y se muestra en conexión serial con ***********************/
+/****************hyperterminal a 9600 8 N 1*********************************/
+/****************determinación de temperatura promedio**********************/
+/***************************************************************************/
+#include <stdint.h>
+#include "tm4c123gh6pm.h"
+
+void ConfiguraUART0(void){
+	SYSCTL_RCGC1_R |= SYSCTL_RCGC1_UART0;	// Habilitamos reloj para el UART0
+	SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOA;	// Habilitamos reloj para GPIOA
+	UART0_CTL_R &= ~UART_CTL_UARTEN;	// Inhabilitamos el UART0
+	UART0_IBRD_R = (UART0_IBRD_R & 0xFFFF0000) | 104;// Velocidad 9600bps (Fsysclk = 16MHz)
+	UART0_FBRD_R = (UART0_FBRD_R & 0xFFFFFFC0) | 11;// Velocidad 9600bps (Fsysclk = 16MHz)
+	UART0_LCRH_R = (UART0_LCRH_R & 0xFFFFFF00) | 0x70;	// 8, N, 1, FIFOs habilitados
+	UART0_CTL_R |= UART_CTL_UARTEN;// Habilitamos el UART0
+	GPIO_PORTA_AMSEL_R &= ~(0x03);	// Desactivamos modo analógico en PA0 y PA1
+	GPIO_PORTA_PCTL_R = (GPIO_PORTA_PCTL_R&0xFFFFFF00)|0x00000011;	// Conectamos UART0 a PA0 y PA1
+	GPIO_PORTA_AFSEL_R |= 0x03;	// Activamos funciones alternas en PA0 y PA1
+	GPIO_PORTA_DEN_R |= 0x03;	// Activamos funciones digitales en PA0 y PA1
+}
+
+void ADC_Config(void){volatile unsigned long delay;
+	SYSCTL_RCGC2_R|=0x00000010; // Prendemos el reloj
+	delay=SYSCTL_RCGC2_R; // esperamos a la real activación
+	GPIO_PORTE_DIR_R&=~0x04; //Configuramos pines del puerto E
+	GPIO_PORTE_AFSEL_R|=0x04;
+	GPIO_PORTE_DEN_R&=~0x04;
+	GPIO_PORTE_AMSEL_R|=0x04;
+	//Activamos ADC
+	SYSCTL_RCGC0_R|=0x00010000;//Velocidad de reloj 125k
+	delay=SYSCTL_RCGC2_R;//delay para la real activación
+	SYSCTL_RCGC0_R&=~0X00000300;//Sequencer 3 maxima prioridad, seq2 segunda, etc.
+	ADC0_SSPRI_R=0x0123;//Deshabilitar sample sequencer 3
+	ADC0_ACTSS_R&=~0x0008;//apagamos sample sequencer 3
+	ADC0_EMUX_R&=~0xF000;//Ponemos 0xF porque siempre esta haciendo lectura
+	ADC0_SSMUX3_R=(ADC0_SSMUX3_R&0XFFFFFFF0)+1;//PE2 a AIN 1
+	ADC0_SSCTL3_R=0x000E;//Con sensor de temperatura TS0, D0, Yes IE0 END0
+	ADC0_ACTSS_R|=0x0008;//Habilitar sample sequencer 3
+}
+
+unsigned long ADC0_InSeq3(void){
+	//Extracción de datos de la FIFO
+	unsigned long result;
+	ADC0_PSSI_R=0x0008;//Inicializar SS3
+	while ((ADC0_RIS_R&0x08)==0){};//Esperar la coversión
+	result=ADC0_SSFIFO3_R&0xFFF;//Leer la FIFO, donde esta la temperatura
+	ADC0_ISC_R=0x0008;//ISC activado bit3
+	return result; // Devolvemos el valor de la FIFO si llaman a la función
+}
+
+void txcar_uart0(uint32_t car){
+	while ((UART0_FR_R & UART_FR_TXFF)!=0); //Espera que esté disponible para transmitir
+	UART0_DR_R = car;
+}
+
+void txmens_uart0(uint8_t mens[]){
+	uint8_t letra;
+	uint8_t i=0;
+	letra= mens[i++];
+	while (letra != '\0'){ //Se envían todos los caracteres hasta el fin de cadena
+		txcar_uart0(letra);
+		letra= mens[i++];
+
+	}
+}
+
+unsigned char Dato[3]; // 3 digitos para enviar
+void NumToChar(unsigned short n){
+	Dato[0] = n/100 + 0x30; // Centenas
+	n = n%100; // n ahora esta entre 0 y 99
+	Dato[1] = n/10 + 0x30; // Decenas
+	n = n%10; // n ahora esta entre 0 y 9
+	Dato[2] = n + 0x30; // Unidades
+}
+
+int main(void){
+	unsigned long volatile delay;
+	ConfiguraUART0();//Configuracion del UART
+	ADC_Config(); // Configuracion del ADC
+	uint32_t temp,seg,tempmax,tempmin, decimaltemp; // variable temperatura
+	uint32_t decimaltempmax,decimaltempmin,decimaltempprom; // variables de decimales de temperatura
+	uint32_t ADCvalor[1]; // Lectura de la fifo almacenada en un arreglo
+	uint32_t tempprom,contador,x;// variables para convertir
+	uint8_t msgtemperatura[]= "\n\r  Temp: ";
+	uint8_t msgpunto[]= ".";
+	uint8_t msgC[]= " C";
+	//Inicializamos variables
+	contador=0;//sirve para sacar el promedio
+	seg=1; //cada cuantos segundos
+	tempprom=0;//inicializamos promedio
+	tempmax=0;//inicializamos la tempmax en 0
+	tempmin=80;//inicializamos en 80
+	delay=0;
+	x=125; // Promedio de "x" valores para poder sacar una lectura más precisa
+	while (1){ //Siempre mostrando
+		ADCvalor[0]=ADC0_InSeq3();// lectura del sensor
+		temp = (uint32_t)(147.5 - ((75.0*3.3*ADCvalor[0])) / 4096.0);// Conversion a Celcius
+		//******************************************************************
+		decimaltemp = (uint32_t)(64*(147.5 - ((75.0*3.3*ADCvalor[0])) / 4096.0));// Decimales de celcius
+		decimaltemp=(decimaltemp%10); // obteniendo decimales
+		//******************************************************************
+		//************LOGICA DE ESTADISTICA DE TOMA DE DATOS****************
+		//******************************************************************
+		if ((temp>tempmax)||(decimaltemp>decimaltempmax)) {
+			tempmax=temp;//guarda la mayor temperatura
+			decimaltempmax=decimaltemp;//guarda los decimales
+		}
+		if ((temp<tempmax)||(decimaltemp<decimaltempmax)) {
+			tempmin=temp;//guarda la menor temperatura
+			decimaltempmin=decimaltemp;//guarda los decimales
+		}
+		//******************************************************************
+		//*************FIN LOGICA ESTADISTICA*******************************
+		//******************************************************************
+		if (contador==x) { // Luego de x veces tomado el dato
+			tempprom=(tempprom-tempmax-tempmin)/(x-1)	; // promedio de temperatura de x datos
+			decimaltempprom= (decimaltemp-decimaltempmax-decimaltempmin)/(x-1); //promediar decimal
+			NumToChar(tempprom);//convertimos la temperatura promedio a un  arreglo para enviar
+			txmens_uart0(msgtemperatura);// mensaje
+			txcar_uart0(Dato[0]);//centenas
+			txcar_uart0(Dato[1]);//deceneas
+			txcar_uart0(Dato[2]);//unidades
+			txmens_uart0(msgpunto);// mensaje punto "."
+			NumToChar(decimaltemp);//convertir decimales a arreglo para enviar
+			txcar_uart0(Dato[2]);//
+			txmens_uart0(msgC);// msg ºC
+			for(delay=0;delay<1000000*seg;delay++){};// retardo de muestreo cada "seg"
+			contador=0;// devolver variables a 0 para nueva lectura
+			tempprom=0;//devolver promedio a 0
+			tempmin=0;//devolver a 0
+			tempmax=0;//devolver a 0
+			decimaltempprom=0;//devolver a 0
+			decimaltempmax=0;//devolver a 0
+			decimaltempmin=0;//devolver a 0 para nueva cuenta
+		}//Fin if
+		tempprom=tempprom+temp;//promedio de x datos
+		decimaltempprom=decimaltempprom+temp; // promedio de decimales de x datos
+		contador++;//contador++
+	}//fin while 1
+}//fin main
