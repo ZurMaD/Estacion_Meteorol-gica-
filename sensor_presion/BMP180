@@ -129,6 +129,7 @@ void NumToChar(long n){
 	Datos[5] = n/10 + 0x30; // Decenas
 	n = n%10; // n ahora esta entre 0 y 9
 	Datos[6] = n + 0x30; // Unidades
+	return Datos;
 }
 /********************FIN CONVERSION DE DATOS **********************************/
 //_________________________________MAIN__________________________________//
@@ -145,13 +146,41 @@ void main (void){
 	unsigned short AC4,AC5,AC6;
 	long UT,UP;
 	long altitud, presion;
-	long x1,x2,x3,B5,b3,T;
+	long x1,x2,x3,B5,T;
 	long B6,B3,p;
 	unsigned long B4,B7;
-	uint8_t mensaje2[]= "Presion: ";
+	uint8_t mensaje2[]= "Presion(Pa): ";
 	uint8_t mensaje3[]= "\n\r ";
-
-
+	uint8_t espacio[]= " ";
+	uint8_t mensaje4[]= "Altitud(msnm): ";
+	dato1=0;
+	dato2=0;
+	datoreal=0;
+	AC1=0;
+	AC2=0;
+	AC3=0;
+	AC4=0;
+	AC5=0;
+	AC6=0;
+	B1=0;
+	B2=0;
+	MB=0;
+	MC=0;
+	MD=0;
+	UT=0;
+	UP=0;
+	altitud=0;
+	presion=0;
+	x1=0;
+	x2=0;
+	x3=0;
+	B5=0;
+	B3=0;
+	T=0;
+	B6=0;
+	p=0;
+	B4=0;
+	B7=0;
 	seg=1;
 	oss=0;
 	//Leer datos de calibracion AC1
@@ -200,31 +229,31 @@ void main (void){
 	MD=(dato1<<8)+dato2;
 
 	while(1){
-		//_____________________________2.READ TEMPERATURE_________________________________//
+		//___________LEER TEMPERATURA UT_____________//
 
 		escribir_I2C(0x77,0xF4,0x2E);
 		for (i=0;i<100000;i++); //wait 4.5ms
 		dato1=leer_I2C(0x77,0xF6);
 		dato2=leer_I2C(0x77,0xF7);
 		UT=((dato1<<8)+dato2);
-		//_____________________________3.READ PRESION    _________________________________//
+		//______________LEER PRESION UP______________//
 		escribir_I2C(0x77,0xF4,(0x34+(oss<<6)));
-		for (i=0;i<100000;i++); //wait 4.5ms
+		for (i=0;i<450000;i++); //wait 4.5ms
 		dato1=leer_I2C(0x77,0xF6);
 		dato2=leer_I2C(0x77,0xF7);
 		UP=(((dato1<<16)+(dato2<<8))>>(8-oss));
-		//_____________________________calcular true temperature   _________________________________//
+		//_______CALCULAR LA REAL TEMPERATURA________//
 		x1=(UT-AC6)*AC5/pow(2,15);
 		x2=MC*pow(2,11)/(x1+MD);
 		B5=x1+x2;
 		T=(B5+8)/pow(2,4);
 
-		//_______________TRANSFORM PRESION_____________________//
+		//__________TRANSFORMAR PRESION_____________//
 		B6=B5-4000;
 		x1=(B2*(B6*B6/pow(2,12)))/pow(2,11);
 		x2=AC2*B6/pow(2,11);
 		x3=x1+x2;
-		b3=(((AC1*4+x3)<<oss)+2)/4;
+		B3=(((AC1*4+x3)<<oss)+2)/4;
 		x1=AC3*B6/pow(2,13);
 		x2=(B1*(B6*B6/pow(2,12)))/pow(2,16);
 		x3=((x1+x2)+2)/pow(2,2);
@@ -240,19 +269,27 @@ void main (void){
 		x1=(x1*3038)/pow(2,16);
 		x2=(-7357*p)/pow(2,16);
 		p=p+(x1+x2+3791)/pow(2,4);
-		//_______________TRANSFORM PRESION__TO NUMBER_________//
-
-		NumToChar(p);
-		txmens_uart0(mensaje2);
-		txmens_uart0(Datos);
-		txmens_uart0(mensaje3);
-		//_______________LIMPIAR REGISTRO_________//
+		//__________TRANSFORMAR MSNM_____________//
+		double altitud;
+		double v1,v2;
+		v1=(p*10000)/101325;
+		v1=v1/10000;
+		v2=1/5.225;
+		altitud=44330*(1-pow(v1,v2));
+		//____TRANSFORMAR PARA ENVIAR POR UART______//
+		//______________LIMPIAR REGISTRO____________//
 		for (i=0;i<7;i++){
 			Datos[i]=0;
 		}
+		NumToChar(p);
+		txmens_uart0(mensaje2);//PRESION
+		txmens_uart0(Datos);//VALOR DE PRESION
+		txmens_uart0(espacio);//espacio
+		txmens_uart0(mensaje4);//ALTITUD
+		NumToChar(altitud);
+		txmens_uart0(Datos);//VALOR DE ALTITUD
+		txmens_uart0(mensaje3);//SIGUIENTE LINEA
 
-		for (i=0;i<1000000*seg;i++); //wait 4.5ms
-
-	}
-}
-//_____________________________FIN__MAIN__________________________________//
+		for (i=0;i<100000*seg;i++); //wait 4.5ms
+	}//FIN WHILE 1
+}//______________FIN__MAIN___________________//
