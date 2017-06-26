@@ -31,7 +31,7 @@ void Configura_I2C_Maestro (void){
 void escribir_I2C0 (uint8_t direccion_esclavo , uint8_t comando ){
 	char estado;
 	do{
-		I2C0_MSA_R =  1 + (direccion_esclavo<<1); // se escribe la direccion del esclavo y se pone como escritura
+		I2C0_MSA_R = (I2C0_MSA_R & ~0xFF) + (direccion_esclavo<<1); // se escribe la direccion del esclavo y se pone como escritura
 		I2C0_MDR_R = (I2C0_MDR_R & ~0xFF) + comando;	//se escribe la direccion del registro que se va a escribir
 		I2C0_MCS_R= (I2C0_MCS_R & ~0x17)| 0x3;			// condicion de inicio
 		do{
