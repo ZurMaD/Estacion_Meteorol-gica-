@@ -1,0 +1,82 @@
+/***************************************************************************/
+/*********************************MAESTRO***********************************/
+/***************************************************************************/
+/*************** Proyecto: Comunicación Inalambrica      *******************/
+/***************************************************************************/
+/*************** Microcontrolador: TM4C123GH6PM ****************************/
+/*************** Tiva C Series TM4C123GH6PM LaunchPad **********************/
+/*************** Autor: Pablo Díaz - Christian******************************/
+/*************** Fecha: Junio 2017 *****************************************/
+/*************** Enunciado: Comunicación entre 2 Tivas          ************/
+/***************************************************************************/
+//Incluimos librerias
+#include <stdint.h>
+#include "tm4c123gh6pm.h"
+//***************CONFIGURAR UART1********************//
+void ConfiguraUART1(void){ // Configuramos puerto UART1
+	SYSCTL_RCGC1_R |= SYSCTL_RCGC1_UART1;// Habilitamos UART1
+	SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOB;	// Habilitamos GPIOB
+	UART1_CTL_R &= ~UART_CTL_UARTEN;// Inhabilitamos el UART1
+  //Configuramos a 115200 la velocidad de comunicación
+	UART1_IBRD_R = (UART1_IBRD_R & ~UART_IBRD_DIVINT_M)|8; // IBRD =int(16,000,000/(16*115,200)) = int(8.68055)
+	UART1_FBRD_R = (UART1_FBRD_R & ~UART_FBRD_DIVFRAC_M)|43; // FBRD = round(0.68055 * 64)= 43.55
+	UART1_LCRH_R = (UART1_LCRH_R & 0xFFFFFF00) | 0x70;// 8, N, 1, FIFOs habilitados
+	UART1_CTL_R |= UART_CTL_UARTEN;	// Habilitamos el UART1
+	GPIO_PORTB_AMSEL_R &= ~(0x03);// Desactivamos modo analógico en PB0 y PB1
+	GPIO_PORTB_PCTL_R = (GPIO_PORTB_PCTL_R & 0xFFFFFF00)|0x00000011; // Conectamos UART0 a PB0 y PB1
+	GPIO_PORTB_AFSEL_R |= 0x03;// Activamos funciones alternas en PB0 y PB1
+	GPIO_PORTB_DEN_R |= 0x03;// Activamos funciones digitales en PB0 y PB1
+}
+void txcar_uart1(uint32_t car){ //Transimir un caracter por uart1
+	while ((UART1_FR_R & UART_FR_TXFF)!=0); //Espera que esté disponible para transmision
+	UART1_DR_R = car;//enviar caracter
+}
+uint8_t rxcar_uart1(void){//recepcion de un caracter 
+	uint8_t temp;
+	while ((UART1_FR_R & UART_FR_RXFE)!=0); // Se espera que llegue un dato
+	temp= UART1_DR_R&0xFF; // Se toman solo 8 bits
+	return temp; // se retorna valor al ser llamada la funcion
+}
+void txmens_uart1(uint8_t mens[]){ // Funcion para poder enviar cadena
+	uint8_t letra;
+	uint8_t i=0; // indice
+	letra= mens[i++];
+	while (letra != '\0'){ //Se envían todos los caracteres hasta el fin de cadena
+		txcar_uart1(letra);
+		letra= mens[i++]; //siguiente indice
+	}
+}
+//***************FIN CONFIGURAR UART1********************//
+//________________________MAIN____________________________//
+void main(void){
+	ConfiguraUART1();//Configura puerto UART1 115200
+  //***Declaracion de variables a usar***//
+  uint32_t i;
+	uint8_t dolar[]="$$$";
+	uint8_t direccion[]="C,00066667C814";
+	uint8_t arreglo[]="HOLA MUNDO\n\r";
+	uint8_t error[]="---\n\r";
+	uint8_t dato;
+
+	for(i=0;i<3000000;i++);//Esperar a configuración
+	txmens_uart1(error);	//Reseteo para posbiles errores
+	for(i=0;i<1000000;i++);//Esperar a respuesta
+	txmens_uart1(dolar); // Se envia el comando "$$$"
+	for(i=0;i<1000000;i++);
+	dato=rxcar_uart1(); 
+	while(dato!=68){ // mientras no llegue la letra D del comando CMD
+		//ESPERAR CMD
+		dato=rxcar_uart1();
+		for(i=0;i<500000;i++);
+	}
+	txmens_uart1(direccion);	//ENVIO DIRRECCION
+	txcar_uart1(13);//ENTER
+	//for(i=0;i<500000;i++);
+	txcar_uart1(0x0A);//NUEVA LINEA
+	for(i=0;i<1000000;i++);//ESPERAMOS EMPAREJAMIENTO
+	while(1){//SIEMPRE FUNCIONANDO
+		txmens_uart1(arreglo);
+		for(i=0;i<100000;i++);
+	}
+}
+//_____________________FIN_MAIN____________________________//
