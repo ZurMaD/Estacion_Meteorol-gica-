@@ -1,0 +1,134 @@
+//GPS
+#include <stdint.h>
+#include "tm4c123gh6pm.h"
+
+
+//configuramos el UART2
+void ConfiguraUART2(void){
+	unsigned long temp;
+	// Habilitamos reloj para GPIOD
+	SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOD;
+	temp = SYSCTL_RCGC2_R;
+	// Inhabilitamos el UART2
+	UART2_CTL_R &= ~UART_CTL_UARTEN;
+	UART2_IBRD_R = (UART2_IBRD_R & ~UART_IBRD_DIVINT_M)|208; // Se configura DIVINT
+	// 16MHz/(16*4800 )
+	// Parte entera
+	UART2_FBRD_R = (UART2_FBRD_R & ~UART_FBRD_DIVFRAC_M)|21; //Se configura DIVFRAC
+	//Parte fraccionaria*64
+	// 8, N, 1, FIFOs habilitados
+	UART2_LCRH_R = (UART2_LCRH_R & 0xFFFFFF00) | 0x70;
+	// Habilitamos el UART2
+	UART2_CTL_R |= UART_CTL_UARTEN;
+	// Desactivamos modo analógico en PD7 y PD6
+	GPIO_PORTD_AMSEL_R &= ~((1<<7)|(1<<6));
+	// Conectamos UART0 a PD7 y PD6
+	GPIO_PORTD_PCTL_R = (GPIO_PORTD_PCTL_R & 0x00FFFFFF) | 0x11000000;
+	// Activamos funciones alternas en PD7 y PD6
+	GPIO_PORTD_AFSEL_R |= ((1<<7)|(1<<6));
+	// Activamos funciones digitales en PD7 y PD6
+	GPIO_PORTD_DEN_R |= ((1<<7)|(1<<6));
+}//
+/*Funcion de configuración del UART*/
+void config_uart0 (void){
+	unsigned long temp;
+	SYSCTL_RCGC1_R |= 0x5; // Se activa el reloj del UART
+	temp = SYSCTL_RCGC2_R; // Espera de unos ciclos de reloj
+	SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOA; // Se activa el reloj del puerto A
+	// PA0 (U0Rx) PA1( U0Tx)
+	temp = SYSCTL_RCGC2_R; // Espera de unos ciclos de reloj
+	UART0_CTL_R &= ~ UART_CTL_UARTEN; // Se desactiva el UART
+	UART0_IBRD_R = (UART0_IBRD_R & ~UART_IBRD_DIVINT_M)|104; // Se configura DIVINT
+	// 16MHz/(16*9600 )
+	// Parte entera
+	UART0_FBRD_R = (UART0_FBRD_R & ~UART_FBRD_DIVFRAC_M)|10; //Se configura DIVFRAC
+	//Parte fraccionaria*64
+	UART0_LCRH_R = ((UART0_LCRH_R & ~0x000000FF)|(UART_LCRH_WLEN_8)|(UART_LCRH_FEN));
+	// Se configuran los bits de datos, 1 bit de parada, sin paridad y habilita el FIFO
+	UART0_CTL_R |= UART_CTL_UARTEN; // Se habilita el UART
+	GPIO_PORTA_AFSEL_R |= 0x03; // Se activan las funciones alternas de PA0 y
+
+	GPIO_PORTA_DEN_R |= 0x03; // Habilitación PA0 y PA1 para señales
+
+}
+/*Función para la recepción de un carácter de 8 bits*/
+uint32_t rxcar_uart2(void){
+	uint32_t temp;
+	while ((UART2_FR_R & UART_FR_RXFE)!=0); // Se espera que llegue un dato
+	temp= UART2_DR_R&0xFF; // Se toman solo 8 bits
+	//txcar_uart0(temp);
+	return temp;
+}
+
+
+
+/*Función para la recepción de un carácter de 8 bits*/
+uint32_t rxcar_uart0(void){
+	uint32_t temp;
+	while ((UART0_FR_R & UART_FR_RXFE)!=0); // Se espera que llegue un dato
+	temp= UART0_DR_R&0xFF; // Se toman solo 8 bits
+	//txcar_uart0(temp);
+	return temp;
+}
+/*Función para la transmisión de un caracter*/
+void txcar_uart0(uint32_t car){
+	while ((UART0_FR_R & UART_FR_TXFF)!=0); //Espera que esté disponible para
+
+	UART0_DR_R = car;
+}
+
+/*Funcion para el envio de una cadena*/
+void txmens_uart0(uint32_t mens[]){
+	uint32_t letra;
+	uint32_t w=0;
+	letra= mens[w++];
+	while (letra != '\0'){ //Se envían todos los caracteres hasta el fin de cadena
+		txcar_uart0(letra);
+		letra= mens[w++];
+	}
+}
+
+
+void main(void){
+
+	//configuro puertos
+	config_uart0();
+	ConfiguraUART2();
+	//declaro variable
+	uint8_t gps[]="Tiempo UTC(hhmmss.sss): ";
+	uint8_t espaciogps[]="\n\r ";
+	uint32_t arreglogps[5];
+	uint32_t gpsdato,trash,i,utc1,utc,utc2;
+
+	while(1){
+		txmens_uart0(gps);
+		for(i=0;i<7;i++){//evitamos datos que recibe al principio
+			//while(gpsdato!='$'){
+			//	gpsdato = rxcar_uart2();
+			//}
+			gpsdato = rxcar_uart2();
+		}
+		for(i=0;i<7;i++){//recibir 6 datos
+			arreglogps[i]=rxcar_uart2();
+			if (i==0){//arreglo A UTC-5
+				utc1=arreglogps[0];
+				arreglogps[1]=rxcar_uart2();
+				utc2=arreglogps[1];
+				utc=(utc1-0x30)*10+(utc2-0x30);
+				utc=utc-5;
+				utc2=utc%10;
+				utc1=utc/10;
+				arreglogps[0]=utc1+0x30;
+				arreglogps[1]=utc2+0x30;
+				i=1;
+			}
+		}
+		txmens_uart0(arreglogps);
+		txmens_uart0(espaciogps);
+		for(i=0;i<55+1+2;i++){//evitamos datos que recibe al principio
+			gpsdato = rxcar_uart2();
+		}
+
+		for(i=0;i<100000;i++);
+	}
+}
