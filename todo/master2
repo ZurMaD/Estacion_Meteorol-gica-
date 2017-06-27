@@ -1,0 +1,540 @@
+/***************************************************************************/
+/*************** PROYECTO TOTAL                          *******************/
+/***************************************************************************/
+/*************** Microcontrolador: TM4C123GH6PM ****************************/
+/*************** Tiva C Series TM4C123GH6PM LaunchPad **********************/
+/*************** Autor: Pablo Díaz ** **************************************/
+/*************** Fecha: Junio 2017 *****************************************/
+/*************** Enunciado: Se programa el sensor de presion    ************/
+/****************y su respectivo i2c el cual es i2c1 ***********************/
+/****************hyperterminal a 9600 8 N 1*********************************/
+/****************determinación de la altura           **********************/
+/***************************************************************************/
+#include <stdint.h>
+#include "tm4c123gh6pm.h"
+#include <math.h>
+/*********************COMUNICACION CON PC************************************/
+void ConfiguraUART0(void){
+	SYSCTL_RCGC1_R |= 0x03;	// Habilitamos reloj para el UART0
+	SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOA;	// Habilitamos reloj para GPIOA
+	UART0_CTL_R &= ~UART_CTL_UARTEN;	// Inhabilitamos el UART0
+	UART0_IBRD_R = (UART0_IBRD_R & 0xFFFF0000) | 104;// Velocidad 9600bps (Fsysclk = 16MHz)
+	UART0_FBRD_R = (UART0_FBRD_R & 0xFFFFFFC0) | 11;// Velocidad 9600bps (Fsysclk = 16MHz)
+	UART0_LCRH_R = (UART0_LCRH_R & 0xFFFFFF00) | 0x70;	// 8, N, 1, FIFOs habilitados
+	UART0_CTL_R |= UART_CTL_UARTEN;// Habilitamos el UART0
+	GPIO_PORTA_AMSEL_R &= ~(0x03);	// Desactivamos modo analógico en PA0 y PA1
+	GPIO_PORTA_PCTL_R = (GPIO_PORTA_PCTL_R&0xFFFFFF00)|0x00000011;	// Conectamos UART0 a PA0 y PA1
+	GPIO_PORTA_AFSEL_R |= 0x03;	// Activamos funciones alternas en PA0 y PA1
+	GPIO_PORTA_DEN_R |= 0x03;	// Activamos funciones digitales en PA0 y PA1
+}
+void txcar_uart0(uint32_t car){
+	while ((UART0_FR_R & UART_FR_TXFF)!=0); //Espera que esté disponible para transmitir
+	UART0_DR_R = car;
+}
+
+void txmens_uart0(uint8_t mens[]){
+	uint8_t letra;
+	uint8_t i=0;
+	letra= mens[i++];
+	while (letra != '\0'){ //Se envían todos los caracteres hasta el fin de cadena
+		txcar_uart0(letra);
+		letra= mens[i++];
+
+	}
+}
+/*********************FIN COMUNICACION CON PC*********************************/
+void ADC_Config(void){volatile unsigned long delay;
+SYSCTL_RCGC2_R|=0x00000010; // Prendemos el reloj
+delay=SYSCTL_RCGC2_R; // esperamos a la real activación
+GPIO_PORTE_DIR_R&=~0x04; //Configuramos pines del puerto E
+GPIO_PORTE_AFSEL_R|=0x04;
+GPIO_PORTE_DEN_R&=~0x04;
+GPIO_PORTE_AMSEL_R|=0x04;
+//Activamos ADC
+SYSCTL_RCGC0_R|=0x00010000;//Velocidad de reloj 125k
+delay=SYSCTL_RCGC2_R;//delay para la real activación
+SYSCTL_RCGC0_R&=~0X00000300;//Sequencer 3 maxima prioridad, seq2 segunda, etc.
+ADC0_SSPRI_R=0x0123;//Deshabilitar sample sequencer 3
+ADC0_ACTSS_R&=~0x0008;//apagamos sample sequencer 3
+ADC0_EMUX_R&=~0xF000;//Ponemos 0xF porque siempre esta haciendo lectura
+ADC0_SSMUX3_R=(ADC0_SSMUX3_R&0XFFFFFFF0)+1;//PE2 a AIN 1
+ADC0_SSCTL3_R=0x000E;//Con sensor de temperatura TS0, D0, Yes IE0 END0
+ADC0_ACTSS_R|=0x0008;//Habilitar sample sequencer 3
+}
+unsigned char DatoTemp[3]; // 3 digitos para enviar
+uint32_t NumToCharTemp(unsigned short n){
+	DatoTemp[0] = n/100 + 0x30; // Centenas
+	n = n%100; // n ahora esta entre 0 y 99
+	DatoTemp[1] = n/10 + 0x30; // Decenas
+	n = n%10; // n ahora esta entre 0 y 9
+	DatoTemp[2] = n + 0x30; // Unidades
+	return DatoTemp;
+}
+
+unsigned long ADC0_InSeq3(void){
+	//Extracción de datos de la FIFO
+	unsigned long result;
+	ADC0_PSSI_R=0x0008;//Inicializar SS3
+	while ((ADC0_RIS_R&0x08)==0){};//Esperar la coversión
+	result=ADC0_SSFIFO3_R&0xFFF;//Leer la FIFO, donde esta la temperatura
+	ADC0_ISC_R=0x0008;//ISC activado bit3
+	return result; // Devolvemos el valor de la FIFO si llaman a la función
+}
+/*********************PRENDER I2C1        ************************************/
+void I2C1(void){
+	SYSCTL_RCGCI2C_R |= 0x03;			// habilita el reloj del I2C1
+	while((SYSCTL_PRI2C_R & SYSCTL_PRI2C_R1)==0);
+	SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R0 ;// habiilita el reloj del puerto A
+	while((SYSCTL_PRGPIO_R & SYSCTL_PRGPIO_R0)==0);
+	GPIO_PORTA_AFSEL_R |= 0xC0;				// se activan funciones alternativas
+	GPIO_PORTA_PCTL_R = (GPIO_PORTA_PCTL_R & ~0xFF000000) + 0x33000000;
+	GPIO_PORTA_ODR_R |= 0x80; 				// se configura el sda como open-drain
+	GPIO_PORTA_ODR_R &= ~0x40;				// se desactiva el scl
+	GPIO_PORTA_AMSEL_R |= 0xC0;				// desactiva funcion analogica
+	GPIO_PORTA_DEN_R |= 0xC0;				// Función digital activada
+	I2C1_MCR_R |= 0x10;						// se incializa el maestro
+	I2C1_MTPR_R = (7<<0); // configure for 100 kbps clock;	// se configura la velocidad MTPR = (System Clock/(2*(SCL_LP + SCL_HP)*SCL_CLK))-1;
+	I2C1_MCS_R &= ~0x10;					// Se pone el bit HS en 0, se descativa high speedmode
+}//fin I2C1
+/********************* FIN PRENDER I2C1    ************************************/
+void Configura_I2C0 (void){
+	//SYSCTL_RCGCI2C_R |= 0x03;	// habilita el reloj del I2C
+	//while((SYSCTL_PRI2C_R & SYSCTL_PRI2C_R0)==0);// esperar real activacion
+	SYSCTL_RCGCGPIO_R |= 0x02;				// habiilita el reloj del puerto B
+	while((SYSCTL_PRGPIO_R & SYSCTL_PRGPIO_R1)==0);
+	GPIO_PORTB_AFSEL_R |= 0x0C;				// se activan funciones alternativas
+	GPIO_PORTB_PCTL_R = (GPIO_PORTB_PCTL_R & ~0x0000FF00) + 0x0003300;
+	GPIO_PORTB_ODR_R |= 0x08; 				// se configura el sda como open-drain
+	GPIO_PORTB_ODR_R &= ~0x04;				// se desactiva el scl
+	GPIO_PORTB_AMSEL_R |= 0x0C;				// desactiva funcion analogica
+	GPIO_PORTB_DEN_R |= 0x0C;				// Función digital activada
+	I2C0_MCR_R |= 0x10;						// se incializa el maestro
+	I2C0_MTPR_R = (I2C0_MTPR_R & ~0xFF) + 0x07;	// se configura la velocidad MTPR = (System Clock/(2*(SCL_LP + SCL_HP)*SCL_CLK))-1;
+	I2C0_MCS_R &= ~0x10;					// Se pone el bit HS en 0
+}
+/********************    TRANSMISION POR I2C  ************************************/
+uint8_t leer_I2CTH(uint8_t direccion_esclavo, uint8_t registro){
+	uint8_t dato,estado;
+	//I2C1_MCS_R= (I2C1_MCS_R & ~0x17)| 0x7;			// condicion de inicio
+	do{
+		while(I2C1_MCS_R&0x00000001){}; // esperar I2C ready
+		I2C1_MSA_R =  (I2C1_MSA_R & ~0xFF) + (direccion_esclavo<<1); // se escribe la direccion del esclavo y se pone como escritura
+		//AK
+		I2C1_MDR_R = (I2C1_MDR_R & ~0xFF) + registro;		//se escribe la direccion del registro que se va a leer
+		I2C1_MCS_R= (I2C1_MCS_R & ~0x17)| 0x3;				// condicion de inicio
+		do{
+			estado= I2C1_MCS_R;
+		}while(estado & 0x01 != 0); 					// se espera que el bit busy se ponga en 0
+	}while( (I2C1_MCS_R & 0x02) != 0);					// si hay error vuelve a realizar todos desde el inicio, sino sigue
+
+	do{
+		I2C1_MSA_R =  (I2C1_MSA_R & ~0xFF) + (direccion_esclavo<<1) + 1; // se escribe la direccion del esclavo y se pone como lectura
+		I2C1_MCS_R= (I2C1_MCS_R & ~0x1F)| 0x7;
+		do{
+			estado= I2C1_MCS_R;
+		}while(estado & 0x01 != 0); 					// se espera que el bit busy se ponga en 0
+	}while( (I2C1_MCS_R & 0x02) != 0);					// si hay error vuelve a realizar todos desde el inicio, sino sigue
+	dato = I2C1_MDR_R & 0xFF; 							// se lee la data del registro escogido
+	//I2C1_MCS_R= (I2C1_MCS_R & ~0x1F)| 0x4;			// condicion de parada;
+	return dato;
+}// fin leer_I2CTH
+
+void escribir_I2CTH (uint8_t direccion_esclavo , uint8_t registro , uint8_t valor){
+	char estado;
+	do{
+		//I2C1_MCS_R= (I2C1_MCS_R & ~0x1F)| 0x7;		// condicion de inicio
+		I2C1_MSA_R =  (I2C1_MSA_R & ~0xFF) + (direccion_esclavo<<1); // se escribe la direccion del esclavo y se pone como escritura
+		I2C1_MDR_R = (I2C1_MDR_R & ~0xFF) + registro;	//se escribe la direccion del registro que se va a escribir
+		I2C1_MCS_R= (I2C1_MCS_R & ~0x17)| 0x3;			// condicion de inicio
+		do{
+			estado= I2C1_MCS_R;
+		}while((estado & 0x01) != 0); 					// se espera que el bit busy se ponga en 0
+	}while( (I2C1_MCS_R & 0x02) != 0);					// si hay error vuelve a realizar todos desde el inicio, sino sigue
+
+	do{
+		I2C1_MDR_R = (I2C1_MDR_R & ~0xFF) + valor;		//se escribe el valor deseado
+		I2C1_MCS_R= (I2C1_MCS_R & ~0x1F)| 0x5;			// condicion de parada
+		do{
+			estado= I2C1_MCS_R;
+		}while(estado & 0x01 != 0); 					// se espera que el bit busy se ponga en 0
+	}while( (I2C1_MCS_R & 0x02) != 0);					// si hay error vuelve a realizar todos desde el inicio, sino sigue
+}//fin escribir_I2CTH
+/******************** FIN TRANSMISION POR I2C  ************************************/
+void escribirI2C0(uint8_t direccion_esclavo, uint8_t comando){
+	char estado;
+	do{
+		I2C0_MCS_R=  0x03;//start
+		I2C0_MSA_R =  (I2C0_MSA_R & ~0xFF) + (direccion_esclavo<<1);//envia direccion de esclavo+Writing
+		estado=I2C0_MCS_R;//ACK DEL ESCLAVO
+		I2C0_MDR_R= (I2C0_MDR_R & ~0xFF) + comando;//borro datos y envio comando
+		//ACK DEL ESCLAVO
+		do{
+			estado=I2C0_MCS_R;
+		}while((estado&0x01)!=0); // mientras no este busy
+	}while((I2C0_MCS_R&0x02)!=0); //mientras no haya error
+}
+uint32_t leer_I2C0(uint8_t direccion_esclavo){
+	uint8_t variable2,variable1,estado;
+	uint32_t variable,i;
+	do{
+		I2C0_MCS_R= (I2C0_MCS_R & ~0x17)| 0x3;//start
+		I2C0_MSA_R =  (I2C0_MSA_R & ~0xFF) + 1+(direccion_esclavo<<1);//Slave+R
+		//NA
+		for(i=0;i<1000;i++);
+		I2C0_MSA_R =  (I2C0_MSA_R & ~0xFF) + 1+(direccion_esclavo<<1);//Slave+R
+		//NA
+		for(i=0;i<1000;i++);
+		I2C0_MSA_R =  (I2C0_MSA_R & ~0xFF) +1+ (direccion_esclavo<<1);//Slave+R
+		//ACK
+		for(i=0;i<1000;i++);
+		do{
+			estado= I2C0_MCS_R;
+		}while(estado & 0x01 != 0);
+	}while( (I2C0_MCS_R & 0x02) != 0);
+	do{
+		variable1=I2C0_MDR_R & 0xFF;
+		for(i=0;i<1000;i++);
+		//ACK MASTER
+		I2C0_MCS_R = (I2C_MCS_ACK);
+		for(i=0;i<1000;i++);
+		variable2=I2C0_MDR_R & 0xFF;
+		do{
+			estado= I2C0_MCS_R;
+		}while(estado & 0x01 != 0); 	// se espera que el bit busy se ponga en 0
+	}while( (I2C0_MCS_R & 0x02) != 0);	//mientras no haya error
+	I2C0_MCS_R= (I2C0_MCS_R & ~0x1F)| 0x4;//Condicion de parada
+	variable=(variable1<<8)+variable2;
+	return variable;
+}
+/******************** CONVERSION DE DATOS ************************************/
+unsigned char DatosPresion[7]; // 3 digitos para enviar
+uint32_t NumToCharPresion(long n){
+
+	DatosPresion[0] = n/1000000 + 0x30; // Centenas
+	n = n%1000000; // n ahora esta entre 0 y 999999
+	DatosPresion[1] = n/100000 + 0x30; // Centenas
+	n = n%100000; // n ahora esta entre 0 y 99999
+	DatosPresion[2] = n/10000 + 0x30; // Centenas
+	n = n%10000; // n ahora esta entre 0 y 9999
+	DatosPresion[3] = n/1000 + 0x30; // Centenas
+	n = n%1000; // n ahora esta entre 0 y 999
+	DatosPresion[4] = n/100 + 0x30; // Centenas
+	n = n%100; // n ahora esta entre 0 y 99
+	DatosPresion[5] = n/10 + 0x30; // Decenas
+	n = n%10; // n ahora esta entre 0 y 9
+	DatosPresion[6] = n + 0x30; // Unidades
+	return DatosPresion;
+}
+/********************FIN CONVERSION DE DATOS **********************************/
+unsigned char CaracterHum[3]; // 3 digitos para enviar
+void NumToCharHum(unsigned short n){
+	CaracterHum[0] = n/100 + 0x30; // Centenas
+	n = n%100; // n ahora esta entre 0 y 99
+	CaracterHum[1] = n/10 + 0x30; // Decenas
+	n = n%10; // n ahora esta entre 0 y 9
+	CaracterHum[2] = n + 0x30; // Unidades
+}
+//******************FIN CONVERSION DE CaracterHumS******************************//
+//***************CONFIGURAR UART1********************//
+void ConfiguraUART1(void){ // Configuramos puerto UART1
+	//SYSCTL_RCGC1_R |= 0x03;// Habilitamos UART1
+	SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOB;	// Habilitamos GPIOB
+	UART1_CTL_R &= ~UART_CTL_UARTEN;// Inhabilitamos el UART1
+	//Configuramos a 115200 la velocidad de comunicación
+	UART1_IBRD_R = (UART1_IBRD_R & ~UART_IBRD_DIVINT_M)|8; // IBRD =int(16,000,000/(16*115,200)) = int(8.68055)
+	UART1_FBRD_R = (UART1_FBRD_R & ~UART_FBRD_DIVFRAC_M)|43; // FBRD = round(0.68055 * 64)= 43.55
+	UART1_LCRH_R = (UART1_LCRH_R & 0xFFFFFF00) | 0x70;// 8, N, 1, FIFOs habilitados
+	UART1_CTL_R |= UART_CTL_UARTEN;	// Habilitamos el UART1
+	GPIO_PORTB_AMSEL_R &= ~(0x03);// Desactivamos modo analógico en PB0 y PB1
+	GPIO_PORTB_PCTL_R = (GPIO_PORTB_PCTL_R & 0xFFFFFF00)|0x00000011; // Conectamos UART0 a PB0 y PB1
+	GPIO_PORTB_AFSEL_R |= 0x03;// Activamos funciones alternas en PB0 y PB1
+	GPIO_PORTB_DEN_R |= 0x03;// Activamos funciones digitales en PB0 y PB1
+}
+void txcar_uart1(uint32_t car){ //Transimir un caracter por uart1
+	while ((UART1_FR_R & UART_FR_TXFF)!=0); //Espera que esté disponible para transmision
+	UART1_DR_R = car;//enviar caracter
+}
+uint8_t rxcar_uart1(void){//recepcion de un caracter
+	uint8_t temp;
+	while ((UART1_FR_R & UART_FR_RXFE)!=0); // Se espera que llegue un dato
+	temp= UART1_DR_R&0xFF; // Se toman solo 8 bits
+	return temp; // se retorna valor al ser llamada la funcion
+}
+void txmens_uart1(uint8_t mens[]){ // Funcion para poder enviar cadena
+	uint8_t letra;
+	uint8_t i=0; // indice
+	letra= mens[i++];
+	while (letra != '\0'){ //Se envían todos los caracteres hasta el fin de cadena
+		txcar_uart1(letra);
+		letra= mens[i++]; //siguiente indice
+	}
+}
+//***************FIN CONFIGURAR UART1********************//
+//_________________________________MAIN__________________________________//
+void main (void){
+	ConfiguraUART0(); // COMUNICACION UART
+	I2C1(); // PRENDER I2C1
+	ADC_Config(); // Configuracion del ADC
+	Configura_I2C0();
+	ConfiguraUART1();//Configura puerto UART1 115200
+
+	uint32_t temp,seg,tempmax,tempmin, decimaltemp; // variable temperatura
+	uint32_t decimaltempmax,decimaltempmin,decimaltempprom; // variables de decimales de temperatura
+	uint32_t ADCvalor[1]; // Lectura de la fifo almacenada en un arreglo
+	uint32_t tempprom,contador,x;// variables para convertir
+	uint8_t msgtemperatura[]= "\n\r  Temp: ";
+	uint8_t msgpunto[]= ".";
+	uint8_t msgC[]= " C ";
+	//Inicializamos variables
+	contador=0;//sirve para sacar el promedio
+	seg=1; //cada cuantos segundos
+	tempprom=0;//inicializamos promedio
+	tempmax=0;//inicializamos la tempmax en 0
+	tempmin=80;//inicializamos en 80
+	x=125; // Promedio de "x" valores para poder sacar una lectura más precisa
+	//_____________________________1.CALIBRACION_________________________________//
+	//Declaracion de variables
+	uint32_t i;
+	short dato1,dato2,datoreal;
+	short AC1,AC2,AC3;
+	short B1,B2,MB,MC,MD;
+	short oss; // oss =0,1,2,3
+	unsigned short AC4,AC5,AC6;
+	long UT,UP;
+	long altitud, presion;
+	long x1,x2,x3,B5,T;
+	long B6,B3,p;
+	unsigned long B4,B7;
+	uint8_t mensaje2[]= "Presion(Pa): ";
+	uint8_t mensaje3[]= "\n\r ";
+	uint8_t espacio[]= " ";
+	uint8_t mensaje4[]= "Altitud(msnm): ";
+
+
+	uint32_t rh,humedad;
+	uint8_t msghumedad[]="Humedad: ";
+	uint8_t simbolo[]=" % ";
+
+
+
+		uint8_t dolar[]="$$$";
+		uint8_t direccion[]="C,00066661E3D0";
+		uint8_t arreglo[]="HOLA MUNDO\n\r";
+		uint8_t error[]="---\n\r";
+		uint8_t dato;
+
+		for(i=0;i<3000000;i++);//Esperar a configuración
+		txmens_uart1(error);	//Reseteo para posbiles errores
+		for(i=0;i<1000000;i++);//Esperar a respuesta
+		txmens_uart1(dolar); // Se envia el comando "$$$"
+		for(i=0;i<1000000;i++);
+		dato=rxcar_uart1();
+		while(dato!=68){ // mientras no llegue la letra D del comando CMD
+			//ESPERAR CMD
+			dato=rxcar_uart1();
+			for(i=0;i<500000;i++);
+		}
+		txmens_uart1(direccion);	//ENVIO DIRRECCION
+		txcar_uart1(13);//ENTER
+		//for(i=0;i<500000;i++);
+		txcar_uart1(0x0A);//NUEVA LINEA
+		for(i=0;i<1000000;i++);//ESPERAMOS EMPAREJAMIENTO
+
+
+
+
+	dato1=0;
+	dato2=0;
+	datoreal=0;
+	AC1=0;
+	AC2=0;
+	AC3=0;
+	AC4=0;
+	AC5=0;
+	AC6=0;
+	B1=0;
+	B2=0;
+	MB=0;
+	MC=0;
+	MD=0;
+	UT=0;
+	UP=0;
+	altitud=0;
+	presion=0;
+	x1=0;
+	x2=0;
+	x3=0;
+	B5=0;
+	B3=0;
+	T=0;
+	B6=0;
+	p=0;
+	B4=0;
+	B7=0;
+	seg=1;
+	oss=0;
+	//Leer datos de calibracion AC1
+	dato1=leer_I2CTH(0x77,0xAA);
+	dato2=leer_I2CTH(0x77,0xAB);
+	AC1=(dato1<<8)+dato2;
+	//Leer datos de calibracion AC2
+	dato1=leer_I2CTH(0x77,0xAC);
+	dato2=leer_I2CTH(0x77,0xAD);
+	AC2=(dato1<<8)+dato2;
+	//Leer datos de calibracion AC3
+	dato1=leer_I2CTH(0x77,0xAE);
+	dato2=leer_I2CTH(0x77,0xAF);
+	AC3=(dato1<<8)+dato2;
+	//Leer datos de calibracion AC4
+	dato1=leer_I2CTH(0x77,0xB0);
+	dato2=leer_I2CTH(0x77,0xB1);
+	AC4=(dato1<<8)+dato2;
+	//Leer datos de calibracion AC5
+	dato1=leer_I2CTH(0x77,0xB2);
+	dato2=leer_I2CTH(0x77,0xB3);
+	AC5=(dato1<<8)+dato2;
+	//Leer datos de calibracion AC6
+	dato1=leer_I2CTH(0x77,0xB4);
+	dato2=leer_I2CTH(0x77,0xB5);
+	AC6=(dato1<<8)+dato2;
+	//Leer datos de calibracion B1
+	dato1=leer_I2CTH(0x77,0xB6);
+	dato2=leer_I2CTH(0x77,0xB7);
+	B1=(dato1<<8)+dato2;
+	//Leer datos de calibracion B2
+	dato1=leer_I2CTH(0x77,0xB8);
+	dato2=leer_I2CTH(0x77,0xB9);
+	B2=(dato1<<8)+dato2;
+	//Leer datos de calibracion MB
+	dato1=leer_I2CTH(0x77,0xBA);
+	dato2=leer_I2CTH(0x77,0xBB);
+	MB=(dato1<<8)+dato2;
+	//Leer datos de calibracion MC
+	dato1=leer_I2CTH(0x77,0xBC);
+	dato2=leer_I2CTH(0x77,0xBD);
+	MC=(dato1<<8)+dato2;
+	//Leer datos de calibracion MD
+	dato1=leer_I2CTH(0x77,0xBE);
+	dato2=leer_I2CTH(0x77,0xBF);
+	MD=(dato1<<8)+dato2;
+
+	while(1){
+		//___________LEER TEMPERATURA UT_____________//
+
+		escribir_I2CTH(0x77,0xF4,0x2E);
+		for (i=0;i<100000;i++); //wait 4.5ms
+		dato1=leer_I2CTH(0x77,0xF6);
+		dato2=leer_I2CTH(0x77,0xF7);
+		UT=((dato1<<8)+dato2);
+		//______________LEER PRESION UP______________//
+		escribir_I2CTH(0x77,0xF4,(0x34+(oss<<6)));
+		for (i=0;i<450000;i++); //wait 4.5ms
+		dato1=leer_I2CTH(0x77,0xF6);
+		dato2=leer_I2CTH(0x77,0xF7);
+		UP=(((dato1<<16)+(dato2<<8))>>(8-oss));
+		//_______CALCULAR LA REAL TEMPERATURA________//
+		x1=(UT-AC6)*AC5/pow(2,15);
+		x2=MC*pow(2,11)/(x1+MD);
+		B5=x1+x2;
+		T=(B5+8)/pow(2,4);
+
+		//__________TRANSFORMAR PRESION_____________//
+		B6=B5-4000;
+		x1=(B2*(B6*B6/pow(2,12)))/pow(2,11);
+		x2=AC2*B6/pow(2,11);
+		x3=x1+x2;
+		B3=(((AC1*4+x3)<<oss)+2)/4;
+		x1=AC3*B6/pow(2,13);
+		x2=(B1*(B6*B6/pow(2,12)))/pow(2,16);
+		x3=((x1+x2)+2)/pow(2,2);
+		B4=AC4*(unsigned long)(x3+32768)/pow(2,15);
+		B7=((unsigned long)UP-B3)*(50000>>oss);
+		if (B7<0x80000000){
+			p=(B7*2)/B4;
+		}
+		else {
+			p=(B7/B4)*2;
+		}
+		x1=(p/pow(2,8))*(p/pow(2,8));
+		x1=(x1*3038)/pow(2,16);
+		x2=(-7357*p)/pow(2,16);
+		p=p+(x1+x2+3791)/pow(2,4);
+		//__________TRANSFORMAR MSNM_____________//
+		double altitud;
+		double v1,v2;
+		v1=(p*10000)/101325;
+		v1=v1/10000;
+		v2=1/5.225;
+		altitud=44330*(1-pow(v1,v2));
+		//____TRANSFORMAR PARA ENVIAR POR UART______//
+		//______________LIMPIAR REGISTRO____________//
+		for (i=0;i<7;i++){
+			DatosPresion[i]=0;
+		}
+		NumToCharPresion(p);
+		txmens_uart1(mensaje2);//PRESION
+		txmens_uart1(DatosPresion);//VALOR DE PRESION
+		txmens_uart1(espacio);//espacio
+		txmens_uart1(mensaje4);//ALTITUD
+		NumToCharPresion(altitud);
+		txmens_uart1(DatosPresion);//VALOR DE ALTITUD
+		//txmens_uart0(mensaje3);//SIGUIENTE LINEA
+		for(contador=0;contador<(x+1);contador++){
+			ADCvalor[0]=ADC0_InSeq3();// lectura del sensor
+			temp = (uint32_t)(147.5 - ((75.0*3.3*ADCvalor[0])) / 4096.0);// Conversion a Celcius
+			//******************************************************************
+			decimaltemp = (uint32_t)(64*(147.5 - ((75.0*3.3*ADCvalor[0])) / 4096.0));// Decimales de celcius
+			decimaltemp=(decimaltemp%10); // obteniendo decimales
+			//******************************************************************
+			//************LOGICA DE ESTADISTICA DE TOMA DE DATOS****************
+			//******************************************************************
+			if ((temp>tempmax)||(decimaltemp>decimaltempmax)) {
+				tempmax=temp;//guarda la mayor temperatura
+				decimaltempmax=decimaltemp;//guarda los decimales
+			}
+			if ((temp<tempmax)||(decimaltemp<decimaltempmax)) {
+				tempmin=temp;//guarda la menor temperatura
+				decimaltempmin=decimaltemp;//guarda los decimales
+			}
+			//******************************************************************
+			//*************FIN LOGICA ESTADISTICA*******************************
+			//******************************************************************
+			if (contador==x) { // Luego de x veces tomado el dato
+				tempprom=(tempprom-tempmax-tempmin)/(x-1)	; // promedio de temperatura de x datos
+				decimaltempprom= (decimaltemp-decimaltempmax-decimaltempmin)/(x-1); //promediar decimal
+				NumToCharTemp(tempprom);//convertimos la temperatura promedio a un  arreglo para enviar
+				txmens_uart1(msgtemperatura);// mensaje
+				txmens_uart1(DatoTemp);//centenas,decenas unidades
+				txmens_uart1(msgpunto);// mensaje punto "."
+				NumToCharTemp(decimaltemp);//convertir decimales a arreglo para enviar
+				txcar_uart1(DatoTemp[2]);//decimal
+				txmens_uart1(msgC);// msg ºC
+
+			}//Fin if
+			tempprom=tempprom+temp;//promedio de x datos
+			decimaltempprom=decimaltempprom+temp; // promedio de decimales de x datos
+
+		}
+		contador=0;// devolver variables a 0 para nueva lectura
+		tempprom=0;//devolver promedio a 0
+		tempmin=0;//devolver a 0
+		tempmax=0;//devolver a 0
+		decimaltempprom=0;//devolver a 0
+		decimaltempmax=0;//devolver a 0
+		decimaltempmin=0;//devolver a 0 para nueva cuenta
+
+
+
+		escribirI2C0(0x40,0xF5);//escribo
+		rh=leer_I2C0(0x40);//leo CaracterHums recibidos
+		humedad=(rh*125/65536)-6;//convierto a valor real de humedad en porcentaje
+		NumToCharHum(humedad);//convertir a arreglo para enviar
+		txmens_uart1(msghumedad);
+		txmens_uart1(CaracterHum);
+		txmens_uart1(simbolo);
+
+		//GPS//
+
+
+	}//FIN WHILE 1
+}//______________FIN__MAIN___________________//
