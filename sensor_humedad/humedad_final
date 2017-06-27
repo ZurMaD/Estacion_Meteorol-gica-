@@ -1,0 +1,138 @@
+/***************************************************************************/
+/*************** Proyecto: SENSOR DE HUMEDAD             *******************/
+/***************************************************************************/
+/*************** Microcontrolador: TM4C123GH6PM ****************************/
+/*************** Tiva C Series TM4C123GH6PM LaunchPad **********************/
+/*************** Autor: Pablo Díaz Vergara *********************************/
+/*************** Fecha: Mayo 2017 ******************************************/
+/*************** Enunciado: Se lee la temperatura con decimales*************/
+/****************y se muestra en conexión serial con ***********************/
+/****************hyperterminal a 9600 8 N 1*********************************/
+/****************determinación de temperatura promedio**********************/
+/***************************************************************************/
+#include <stdint.h>
+#include "tm4c123gh6pm.h"
+//*************************CONFIGURAR I2C0*******************************//
+void Configura_I2C0 (void){
+	SYSCTL_RCGCI2C_R |= SYSCTL_RCGCI2C_R0;	// habilita el reloj del I2C
+	while((SYSCTL_PRI2C_R & SYSCTL_PRI2C_R0)==0);// esperar real activacion
+	SYSCTL_RCGCGPIO_R |= 0x02;				// habiilita el reloj del puerto B
+	while((SYSCTL_PRGPIO_R & SYSCTL_PRGPIO_R1)==0);
+	GPIO_PORTB_AFSEL_R |= 0x0C;				// se activan funciones alternativas
+	GPIO_PORTB_PCTL_R = (GPIO_PORTB_PCTL_R & ~0x0000FF00) + 0x0003300;
+	GPIO_PORTB_ODR_R |= 0x08; 				// se configura el sda como open-drain
+	GPIO_PORTB_ODR_R &= ~0x04;				// se desactiva el scl
+	GPIO_PORTB_AMSEL_R |= 0x0C;				// desactiva funcion analogica
+	GPIO_PORTB_DEN_R |= 0x0C;				// Función digital activada
+	I2C0_MCR_R |= 0x10;						// se incializa el maestro
+	I2C0_MTPR_R = (I2C0_MTPR_R & ~0xFF) + 0x07;	// se configura la velocidad MTPR = (System Clock/(2*(SCL_LP + SCL_HP)*SCL_CLK))-1;
+	I2C0_MCS_R &= ~0x10;					// Se pone el bit HS en 0
+}
+void escribirI2C0(uint8_t direccion_esclavo, uint8_t comando){
+	char estado;
+	do{
+		I2C0_MCS_R=  0x03;//start
+		I2C0_MSA_R =  (I2C0_MSA_R & ~0xFF) + (direccion_esclavo<<1);//envia direccion de esclavo+Writing
+		estado=I2C0_MCS_R;//ACK DEL ESCLAVO
+		I2C0_MDR_R= (I2C0_MDR_R & ~0xFF) + comando;//borro datos y envio comando
+		//ACK DEL ESCLAVO
+		do{
+			estado=I2C0_MCS_R;
+		}while((estado&0x01)!=0); // mientras no este busy
+	}while((I2C0_MCS_R&0x02)!=0); //mientras no haya error
+}
+uint32_t leer_I2C0(uint8_t direccion_esclavo){
+	uint8_t dato2,dato1,estado;
+	uint32_t dato,i;
+	do{
+		I2C0_MCS_R= (I2C0_MCS_R & ~0x17)| 0x3;//start
+		I2C0_MSA_R =  (I2C0_MSA_R & ~0xFF) + 1+(direccion_esclavo<<1);//Slave+R
+		//NA
+		for(i=0;i<1000;i++);
+		I2C0_MSA_R =  (I2C0_MSA_R & ~0xFF) + 1+(direccion_esclavo<<1);//Slave+R
+		//NA
+		for(i=0;i<1000;i++);
+		I2C0_MSA_R =  (I2C0_MSA_R & ~0xFF) +1+ (direccion_esclavo<<1);//Slave+R
+		//ACK
+		for(i=0;i<1000;i++);
+		do{
+			estado= I2C0_MCS_R;
+		}while(estado & 0x01 != 0);
+	}while( (I2C0_MCS_R & 0x02) != 0);
+	do{
+		dato1=I2C0_MDR_R & 0xFF;
+		for(i=0;i<1000;i++);
+		//ACK MASTER
+		I2C0_MCS_R = (I2C_MCS_ACK);
+		for(i=0;i<1000;i++);
+		dato2=I2C0_MDR_R & 0xFF;
+		do{
+			estado= I2C0_MCS_R;
+		}while(estado & 0x01 != 0); 	// se espera que el bit busy se ponga en 0
+	}while( (I2C0_MCS_R & 0x02) != 0);	//mientras no haya error
+	I2C0_MCS_R= (I2C0_MCS_R & ~0x1F)| 0x4;//Condicion de parada
+	dato=(dato1<<8)+dato2;
+	return dato;
+}
+//***********************FIN CONFIGURAR I2C0*******************************//
+
+//*************************CONFIGURAR UART0*******************************//
+void ConfiguraUART0(void){
+	SYSCTL_RCGC1_R |= SYSCTL_RCGC1_UART0;	// Habilitamos reloj para el UART0
+	SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOA;	// Habilitamos reloj para GPIOA
+	UART0_CTL_R &= ~UART_CTL_UARTEN;	// Inhabilitamos el UART0
+	UART0_IBRD_R = (UART0_IBRD_R & 0xFFFF0000) | 104;// Velocidad 9600bps (Fsysclk = 16MHz)
+	UART0_FBRD_R = (UART0_FBRD_R & 0xFFFFFFC0) | 11;// Velocidad 9600bps (Fsysclk = 16MHz)
+	UART0_LCRH_R = (UART0_LCRH_R & 0xFFFFFF00) | 0x70;	// 8, N, 1, FIFOs habilitados
+	UART0_CTL_R |= UART_CTL_UARTEN;// Habilitamos el UART0
+	GPIO_PORTA_AMSEL_R &= ~(0x03);	// Desactivamos modo analógico en PA0 y PA1
+	GPIO_PORTA_PCTL_R = (GPIO_PORTA_PCTL_R&0xFFFFFF00)|0x00000011;	// Conectamos UART0 a PA0 y PA1
+	GPIO_PORTA_AFSEL_R |= 0x03;	// Activamos funciones alternas en PA0 y PA1
+	GPIO_PORTA_DEN_R |= 0x03;	// Activamos funciones digitales en PA0 y PA1
+}
+void txcar_uart0(uint32_t car){
+	while ((UART0_FR_R & UART_FR_TXFF)!=0); //Espera que esté disponible para transmitir
+	UART0_DR_R = car;
+}
+
+void txmens_uart0(uint8_t mens[]){
+	uint8_t letra;
+	uint8_t i=0;
+	letra= mens[i++];
+	while (letra != '\0'){ //Se envían todos los caracteres hasta el fin de cadena
+		txcar_uart0(letra);
+		letra= mens[i++];
+
+	}
+}
+//*********************FIN CONFIGURAR UART0*******************************//
+//*********************CONVERSION DE DATOS*******************************//
+unsigned char Dato[3]; // 3 digitos para enviar
+void NumToChar(unsigned short n){
+	Dato[0] = n/100 + 0x30; // Centenas
+	n = n%100; // n ahora esta entre 0 y 99
+	Dato[1] = n/10 + 0x30; // Decenas
+	n = n%10; // n ahora esta entre 0 y 9
+	Dato[2] = n + 0x30; // Unidades
+}
+//******************FIN CONVERSION DE DATOS******************************//
+//______________________MAIN_____________________________//
+int main(void){
+	//Configuro funciones
+	ConfiguraUART0();//Configura UART0 comunicación con PC
+	Configura_I2C0();//Configura I2C0
+	//Declaro variables
+	uint32_t rh,humedad,i;
+	uint8_t msghumedad[]="Humedad: ";
+	uint8_t simbolo[]="%\n\r";
+	while(1){
+		escribirI2C0(0x40,0xF5);//escribo
+		rh=leer_I2C0(0x40);//leo datos recibidos
+		humedad=(rh*125/65536)-6;//convierto a valor real de humedad en porcentaje
+		NumToChar(humedad);//convertir a arreglo para enviar
+		txmens_uart0(msghumedad);
+		txmens_uart0(Dato);
+		txmens_uart0(simbolo);
+		for(i=0;i<1000000;i++);//retardo siguiente toma
+	}
+}//_____________________FIN MAIN_____________________________//
