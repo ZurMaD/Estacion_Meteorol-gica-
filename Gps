@@ -1,0 +1,174 @@
+//GPS
+#include <stdint.h>
+#include "tm4c123gh6pm.h"
+
+
+//configuramos el UART2
+void ConfiguraUART2(void){
+	unsigned long temp;
+		// Habilitamos reloj para el UART2
+		SYSCTL_RCGC1_R |= SYSCTL_RCGC1_UART2;
+		temp = SYSCTL_RCGC2_R;
+		// Habilitamos reloj para GPIOD
+		SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOD;
+		temp = SYSCTL_RCGC2_R;
+		// Inhabilitamos el UART2
+		UART2_CTL_R &= ~UART_CTL_UARTEN;
+		UART2_IBRD_R = (UART2_IBRD_R & ~UART_IBRD_DIVINT_M)|208; // Se configura DIVINT
+			// 16MHz/(16*4800 )
+			// Parte entera
+		UART2_FBRD_R = (UART2_FBRD_R & ~UART_FBRD_DIVFRAC_M)|21; //Se configura DIVFRAC
+			//Parte fraccionaria*64
+
+		// 8, N, 1, FIFOs habilitados
+		UART2_LCRH_R = (UART2_LCRH_R & 0xFFFFFF00) | 0x70;
+		// Habilitamos el UART2
+		UART2_CTL_R |= UART_CTL_UARTEN;
+		// Desactivamos modo analógico en PD7 y PD6
+		GPIO_PORTD_AMSEL_R &= ~((1<<7)|(1<<6));
+		// Conectamos UART0 a PD7 y PD6
+		GPIO_PORTD_PCTL_R = (GPIO_PORTD_PCTL_R & 0x00FFFFFF) | 0x11000000;
+		// Activamos funciones alternas en PD7 y PD6
+		GPIO_PORTD_AFSEL_R |= ((1<<7)|(1<<6));
+		// Activamos funciones digitales en PD7 y PD6
+		GPIO_PORTD_DEN_R |= ((1<<7)|(1<<6));
+	}//
+	/*Funcion de configuración del UART*/
+void config_uart0 (void){
+	unsigned long temp;
+	SYSCTL_RCGC1_R |= SYSCTL_RCGC1_UART0; // Se activa el reloj del UART
+	temp = SYSCTL_RCGC2_R; // Espera de unos ciclos de reloj
+	SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOA; // Se activa el reloj del puerto A
+	// PA0 (U0Rx) PA1( U0Tx)
+	temp = SYSCTL_RCGC2_R; // Espera de unos ciclos de reloj
+	UART0_CTL_R &= ~ UART_CTL_UARTEN; // Se desactiva el UART
+	UART0_IBRD_R = (UART0_IBRD_R & ~UART_IBRD_DIVINT_M)|104; // Se configura DIVINT
+	// 16MHz/(16*9600 )
+	// Parte entera
+	UART0_FBRD_R = (UART0_FBRD_R & ~UART_FBRD_DIVFRAC_M)|10; //Se configura DIVFRAC
+	//Parte fraccionaria*64
+	UART0_LCRH_R = ((UART0_LCRH_R & ~0x000000FF)|(UART_LCRH_WLEN_8)|(UART_LCRH_FEN));
+	// Se configuran los bits de datos, 1 bit de parada, sin paridad y habilita el FIFO
+	UART0_CTL_R |= UART_CTL_UARTEN; // Se habilita el UART
+	GPIO_PORTA_AFSEL_R |= 0x03; // Se activan las funciones alternas de PA0 y
+
+	GPIO_PORTA_DEN_R |= 0x03; // Habilitación PA0 y PA1 para señales
+
+}
+/*Función para la recepción de un carácter de 8 bits*/
+uint32_t rxcar_uart2(void){
+	uint32_t temp;
+	while ((UART2_FR_R & UART_FR_RXFE)!=0); // Se espera que llegue un dato
+	temp= UART2_DR_R&0xFF; // Se toman solo 8 bits
+	//txcar_uart0(temp);
+	return temp;
+}
+
+
+
+/*Función para la recepción de un carácter de 8 bits*/
+uint32_t rxcar_uart0(void){
+	uint32_t temp;
+	while ((UART0_FR_R & UART_FR_RXFE)!=0); // Se espera que llegue un dato
+	temp= UART0_DR_R&0xFF; // Se toman solo 8 bits
+	//txcar_uart0(temp);
+	return temp;
+}
+/*Función para la transmisión de un caracter*/
+void txcar_uart0(uint32_t car){
+	while ((UART0_FR_R & UART_FR_TXFF)!=0); //Espera que esté disponible para
+
+	UART0_DR_R = car;
+}
+
+/*Funcion para el envio de una cadena*/
+void txmens_uart0(uint32_t mens[]){
+   uint32_t letra;
+   uint32_t w=0;
+   letra= mens[w++];
+   while (letra != '\0'){ //Se envían todos los caracteres hasta el fin de cadena
+   txcar_uart0(letra);
+   letra= mens[w++];
+   }
+   }
+
+
+void main(void){
+	//uint32_t hora;
+	//uint32_t minutos;
+	//uint32_t segundos;
+	//uint32_t reloj[]={};
+
+	//uint32_t dia;
+	//uint32_t mes;
+	//uint32_t año;
+	//uint32_t fecha[]={};
+	//uint32_t arreglo1[4]={};
+	//uint32_t arreglo2[4]={};
+	uint32_t i;
+	uint32_t z=0;
+	uint32_t x=0;
+	uint32_t j;
+	//uint32_t d;
+	uint32_t h;
+	uint32_t d;
+	//uint32_t m;
+	//uint32_t arreglodos[]={};
+	uint32_t inicial;
+	uint32_t caracter;
+	uint32_t contador=0;
+	//uint32_t arreglo[]={};
+
+	uint32_t tiempo[11]={};
+
+	//uint32_t verlosarreglo;
+	uint32_t date[7]={};
+	config_uart0();
+	ConfiguraUART2();
+    //
+	inicial = rxcar_uart2();
+    while(inicial != '$'){
+		inicial = rxcar_uart2();
+		}
+	//contador = 0 ;
+	for(i=0;i<69;i++){
+
+		caracter = rxcar_uart2();
+		if(caracter==','){
+			contador++;
+			        if (contador==1){
+				        for(j=0;j<10;j++){
+				        	tiempo[x]=rxcar_uart2();
+				        	x++;
+								//tiempo[j]=c;
+
+								//txcar_uart0(c);
+								}// fin der for j
+			         }//fin de if contador
+
+			             if(contador==9){
+				             for(h=0;h<6;h++){
+				             date[z]=rxcar_uart2();
+				             z++;
+					         //fecha[h]=d;
+					         //txcar_uart0(d);
+				             }
+			             }
+
+		}//fin de if coma
+
+
+    //txmens_uart0(tiempo);
+
+	}// fin de for
+	//txmens_uart0(tiempo);
+	txmens_uart0(tiempo);
+
+    txmens_uart0(date);
+
+
+	//for(m=0;m<100000;m++);
+	//txmens_uart0(date);
+	while(1);
+
+}
