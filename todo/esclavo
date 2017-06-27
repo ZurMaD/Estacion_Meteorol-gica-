@@ -1,0 +1,121 @@
+/***************************************************************************/
+/********************************ESCLAVO***********************************/
+/***************************************************************************/
+/*************** Proyecto: Comunicación Inalambrica      *******************/
+/***************************************************************************/
+/*************** Microcontrolador: TM4C123GH6PM ****************************/
+/*************** Tiva C Series TM4C123GH6PM LaunchPad **********************/
+/*************** Autor: Pablo Díaz - Christian******************************/
+/*************** Fecha: Junio 2017 *****************************************/
+/*************** Enunciado: Comunicación entre 2 Tivas          ************/
+/***************************************************************************/
+//Declaración de librerias
+#include <stdint.h>
+#include "tm4c123gh6pm.h"
+
+void config_pulsador_led(void) {//Configuracion de puerto F
+	unsigned long temp;
+	SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOF; // Se habilita el reloj del Puerto F
+	temp = SYSCTL_RCGC2_R; // Espera a que se estabilice el reloj
+	GPIO_PORTF_AMSEL_R &= ~(0X12); // Se deshabilitan las funciones analógicas
+	GPIO_PORTF_PCTL_R &= ~(0X000FFFFF); // Se asegura que los pines no estén
+	// configurados para otras funciones (no GPIO)
+	GPIO_PORTF_DIR_R &= ~(0X10); // Se configura PF4(SW1) como entrada
+	GPIO_PORTF_DIR_R |= 0X02; // Se configura PF1(D1) como salida
+	GPIO_PORTF_AFSEL_R &= ~(0X12); // Se configuran los pines como GPIO
+	GPIO_PORTF_PUR_R |= 0X10; // Se activan la resist. pull-up de la entrada PF4
+	GPIO_PORTF_DR8R_R |= 0X02; // Se activan los controladores de hasta 8mA
+	GPIO_PORTF_DEN_R |= 0X12; // Se habilitan las salidas digitales
+}
+//***************CONFIGURAR UART1********************//
+void ConfiguraUART1(void){ // Configuramos puerto UART1
+	//SYSCTL_RCGC1_R |= SYSCTL_RCGC1_UART1;// Habilitamos UART1
+	SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOB;	// Habilitamos GPIOB
+	UART1_CTL_R &= ~UART_CTL_UARTEN;// Inhabilitamos el UART1
+	//Configuramos a 115200 la velocidad de comunicación
+	UART1_IBRD_R = (UART1_IBRD_R & ~UART_IBRD_DIVINT_M)|8; // IBRD =int(16,000,000/(16*115,200)) = int(8.68055)
+	UART1_FBRD_R = (UART1_FBRD_R & ~UART_FBRD_DIVFRAC_M)|43; // FBRD = round(0.68055 * 64)= 43.55
+	UART1_LCRH_R = (UART1_LCRH_R & 0xFFFFFF00) | 0x70;// 8, N, 1, FIFOs habilitados
+	UART1_CTL_R |= UART_CTL_UARTEN;	// Habilitamos el UART1
+	GPIO_PORTB_AMSEL_R &= ~(0x03);// Desactivamos modo analógico en PB0 y PB1
+	GPIO_PORTB_PCTL_R = (GPIO_PORTB_PCTL_R & 0xFFFFFF00)|0x00000011; // Conectamos UART0 a PB0 y PB1
+	GPIO_PORTB_AFSEL_R |= 0x03;// Activamos funciones alternas en PB0 y PB1
+	GPIO_PORTB_DEN_R |= 0x03;// Activamos funciones digitales en PB0 y PB1
+}
+void txcar_uart1(uint32_t car){ //Transimir un caracter por uart1
+	while ((UART1_FR_R & UART_FR_TXFF)!=0); //Espera que esté disponible para transmision
+	UART1_DR_R = car;//enviar caracter
+}
+uint8_t rxcar_uart1(void){//recepcion de un caracter
+	uint8_t temp;
+	while ((UART1_FR_R & UART_FR_RXFE)!=0); // Se espera que llegue un dato
+	temp= UART1_DR_R&0xFF; // Se toman solo 8 bits
+	return temp; // se retorna valor al ser llamada la funcion
+}
+void txmens_uart1(uint8_t mens[]){ // Funcion para poder enviar cadena
+	uint8_t letra;
+	uint8_t i=0; // indice
+	letra= mens[i++];
+	while (letra != '\0'){ //Se envían todos los caracteres hasta el fin de cadena
+		txcar_uart1(letra);
+		letra= mens[i++]; //siguiente indice
+	}
+}
+//*************FIN CONFIGURAR UART1********************//
+//***************CONFIGURAR UART0********************//
+void config_uart0 (void)
+{
+	int temp;
+	SYSCTL_RCGC1_R |= 0x03; // Se activa UART0
+	temp = SYSCTL_RCGC1_R;
+	SYSCTL_RCGC2_R |= SYSCTL_RCGC2_GPIOA; // Se activa el puerto A
+	temp = SYSCTL_RCGC2_R;
+	UART0_CTL_R &= ~UART_CTL_UARTEN; // Se recomienda deshabilitar el UART para
+	// cambiar los parametros
+	UART0_IBRD_R = (UART0_IBRD_R & ~UART_IBRD_DIVINT_M)|8; // IBRD =
+	//int(16,000,000/(16*115,200)) = int(8.68055)
+	UART0_FBRD_R = (UART0_FBRD_R & ~UART_FBRD_DIVFRAC_M)|43; // FBRD = round(0.68055 * 64)
+	// = 43.55
+	UART0_LCRH_R = ((UART0_LCRH_R & ~0x000000FF)|(UART_LCRH_WLEN_8)|(UART_LCRH_FEN));
+	// 8 bit, 1 bit de parada, Sin paridad, Se habilitan la FIFO de Tx y Rx
+	UART0_CTL_R |= UART_CTL_UARTEN; // Habilita UART
+	GPIO_PORTA_AFSEL_R |= 0x03; // Habilita la func. alternativa de PA0/1
+	GPIO_PORTA_DEN_R |= 0x03; // Habilita la func. de E/S digital de PA0/1
+	GPIO_PORTA_PCTL_R = (GPIO_PORTA_PCTL_R&0xFFFFFF00)+0x00000011; //Configura la función
+	// alternativa en PA0/1
+	GPIO_PORTA_AMSEL_R &= ~0x03; // Deshabilita func. analogicas de PA0/1
+}
+
+void txcar_uart0(uint32_t car){//enviar caracter
+	while ((UART0_FR_R & UART_FR_TXFF)!=0); //Espera que esté disponible para
+
+	UART0_DR_R = car;
+}
+uint8_t rxcar_uart0(void){//recibir caracter
+	uint8_t temp;
+	while ((UART0_FR_R & UART_FR_RXFE)!=0); // Se espera que llegue un dato
+	temp= UART0_DR_R&0xFF; // Se toman solo 8 bits
+	return temp;
+}
+void txmens_uart0(uint8_t mens[]){//Similiar a uart1
+	uint8_t letra;
+	uint8_t i=0;
+	letra= mens[i++];
+	while (letra != '\0'){ //Se envían todos los caracteres hasta el fin de cadena
+		txcar_uart0(letra);
+		letra= mens[i++];
+	}
+}
+//***********FIN*CONFIGURAR UART0********************//
+//________________________MAIN____________________________//
+void main(void){
+	uint8_t dato;
+	config_uart0();
+	config_pulsador_led();
+	ConfiguraUART1();
+	while(1){
+		dato=rxcar_uart1();
+		txcar_uart0(dato);
+	}
+}
+//_____________________FIN_MAIN____________________________//
